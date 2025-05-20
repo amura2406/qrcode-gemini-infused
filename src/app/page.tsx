@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/button';
 import { QrCodeUploader } from '@/components/qr-code-uploader';
 import { QrContentDisplay } from '@/components/qr-content-display';
 import { AppHeader } from '@/components/app-header';
-import { generateTitleAction, decodeQrCodeAction } from '@/lib/actions';
+import { generateTitleAction } from '@/lib/actions';
 import { ScanLine, RotateCcw, Loader2, AlertCircle } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from "@/hooks/use-toast";
+import jsQR from "jsqr";
 
 export default function HomePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -56,51 +57,65 @@ export default function HomePage() {
     setQrContent(null);
     setAiTitle(null);
 
-    const reader = new FileReader();
-    reader.readAsDataURL(selectedFile);
+    const fileReader = new FileReader();
+    fileReader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      const image = new Image();
+      image.onload = async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const ctx = canvas.getContext('2d');
 
-    reader.onload = async () => {
-      const imageDataUri = reader.result as string;
-      try {
-        const decodeResult = await decodeQrCodeAction(imageDataUri);
-
-        if (decodeResult.error) {
-          setError(decodeResult.error);
+        if (!ctx) {
+          setError("Could not get canvas context for QR decoding.");
           setIsLoading(false);
           return;
         }
-
-        if (!decodeResult.content || decodeResult.content.trim() === "") {
-          setError("No QR code found in the image, or it could not be read.");
-          setQrContent(null);
-          setAiTitle(null);
-          setIsLoading(false);
-          return;
-        }
+        ctx.drawImage(image, 0, 0);
+        const imageData = ctx.getImageData(0, 0, image.width, image.height);
         
-        setQrContent(decodeResult.content);
+        try {
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: "dontInvert",
+          });
 
-        // Generate AI Title
-        const titleResult = await generateTitleAction(decodeResult.content);
-        if (titleResult.error) {
-          setError(titleResult.error); // Show error from title generation
-          setAiTitle("Content Analysis"); // Fallback title
-        } else {
-          setAiTitle(titleResult.title || "Content Analysis");
+          if (code && code.data) {
+            setQrContent(code.data);
+            // Generate AI Title
+            const titleResult = await generateTitleAction(code.data);
+            if (titleResult.error) {
+              setError(prevError => prevError ? `${prevError}. ${titleResult.error}` : titleResult.error);
+              setAiTitle("Content Analysis"); // Fallback title
+            } else {
+              setAiTitle(titleResult.title || "Content Analysis");
+            }
+          } else {
+            setError("No QR code found in the image, or it could not be read by jsQR.");
+            setQrContent(null);
+            setAiTitle(null);
+          }
+        } catch (jsqrError) {
+            console.error("Error during jsQR decoding:", jsqrError);
+            setError('An unexpected error occurred during QR code decoding with jsQR.');
+            setAiTitle("Content Analysis"); 
+        } finally {
+          setIsLoading(false);
         }
-      } catch (e) {
-        console.error("Error during QR scan or title generation:", e);
-        setError('An unexpected error occurred during processing.');
-        setAiTitle("Content Analysis"); // Fallback title
-      } finally {
+      };
+      image.onerror = () => {
+        setError("Failed to load image for QR decoding.");
         setIsLoading(false);
-      }
+      };
+      image.src = dataUrl;
     };
 
-    reader.onerror = () => {
+    fileReader.onerror = () => {
       setError("Failed to read the selected file.");
       setIsLoading(false);
     };
+    
+    fileReader.readAsDataURL(selectedFile);
   };
 
   const handleReset = () => {
@@ -165,12 +180,12 @@ export default function HomePage() {
           content={qrContent}
           title={aiTitle}
           isLoading={isLoading}
-          error={!aiTitle && !isLoading && !qrContent ? error : null} // Pass error if it's the primary reason for no content display
+          error={!aiTitle && !isLoading && !qrContent ? error : null}
         />
       </main>
       <footer className="mt-12 text-center text-sm text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} QR Info Reveal. All rights reserved.</p>
-        <p className="mt-1">Powered by Next.js & Firebase Genkit</p>
+        <p className="mt-1">Powered by Next.js, jsQR & Firebase Genkit</p>
       </footer>
     </div>
   );
