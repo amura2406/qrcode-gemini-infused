@@ -21,7 +21,7 @@ const QrCodeDecoderInputSchema = z.object({
 export type QrCodeDecoderInput = z.infer<typeof QrCodeDecoderInputSchema>;
 
 const QrCodeDecoderOutputSchema = z.object({
-  decodedContent: z.string().describe("The decoded content of the QR code. Empty if not found or not decodable."),
+  decodedContent: z.string().describe("The decoded content of the QR code. Should be an empty string if no QR code is found or if it cannot be reliably decoded."),
 });
 export type QrCodeDecoderOutput = z.infer<typeof QrCodeDecoderOutputSchema>;
 
@@ -33,15 +33,19 @@ const qrCodeDecoderPrompt = ai.definePrompt({
   name: 'qrCodeDecoderPrompt',
   input: {schema: QrCodeDecoderInputSchema},
   output: {schema: QrCodeDecoderOutputSchema},
-  prompt: `You are an expert QR code reader.
-Analyze the provided image and extract the content of any QR code present.
+  prompt: `You are an expert QR code reader. Your task is to meticulously analyze the provided image and accurately extract the content of any QR code present.
+
 Image: {{media url=imageDataUri}}
 
-Based on your analysis, populate the 'decodedContent' field in the output.
-If a QR code is found and successfully decoded, the 'decodedContent' field should contain its textual content.
-If multiple QR codes are present in the image, use the content of the first one you clearly identify.
-If no QR code is found in the image, or if the QR code cannot be reliably decoded, the 'decodedContent' field should be an empty string.
-Ensure the output strictly adheres to the provided schema.
+Follow these instructions carefully:
+1.  Examine the image thoroughly to locate any QR codes.
+2.  If a QR code is found and successfully decoded, the 'decodedContent' field in your output MUST contain the exact textual content of the QR code.
+3.  If multiple QR codes are present in the image, use the content of the most prominent or clearest one you can identify.
+4.  If no QR code is found in the image, or if the QR code is present but cannot be reliably decoded (e.g., it's blurry, obscured, or malformed), the 'decodedContent' field MUST be an empty string ("").
+5.  Do not guess or provide any placeholder text if a QR code is not decodable. An empty string is the correct response in such cases.
+6.  Ensure your output strictly adheres to the provided output schema. The 'decodedContent' field is the only field expected.
+
+Provide only the decoded content or an empty string as per these rules.
 `,
 });
 
@@ -53,11 +57,9 @@ const qrCodeDecoderFlow = ai.defineFlow(
   },
   async input => {
     const {output} = await qrCodeDecoderPrompt(input);
-    if (!output) {
-      // This case should ideally not happen if the LLM adheres to the schema,
-      // but as a fallback, return empty content.
-      return { decodedContent: "" };
-    }
-    return output;
+    // Ensure output is not null and adheres to the schema,
+    // defaulting to empty decodedContent if something unexpected happens.
+    return output || { decodedContent: "" };
   }
 );
+
