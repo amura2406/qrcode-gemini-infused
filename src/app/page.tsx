@@ -2,46 +2,86 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
 import { QrContentDisplay } from '@/components/qr-content-display';
 import { AppHeader } from '@/components/app-header';
-import { generateTitleAction } from '@/lib/actions';
-import { RotateCcw, Loader2, AlertCircle, VideoOff } from 'lucide-react';
+import { generateTitleAction, summarizeWebpageAction } from '@/lib/actions';
+import { Loader2, AlertCircle, VideoOff } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from "@/hooks/use-toast";
 import jsQR from "jsqr";
 import { Card, CardContent } from '@/components/ui/card';
 
+const AUTO_RESET_DELAY = 10000; // 10 seconds
+
 export default function HomePage() {
   const [qrContent, setQrContent] = useState<string | null>(null);
   const [aiTitle, setAiTitle] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false); // True when fetching AI title
-  const [error, setError] = useState<string | null>(null);
+  const [webpageSummary, setWebpageSummary] = useState<string | null>(null);
+  
+  const [isGeneratingTitle, setIsGeneratingTitle] = useState(false);
+  const [isSummarizingWebpage, setIsSummarizingWebpage] = useState(false);
+  
+  const [aiTitleError, setAiTitleError] = useState<string | null>(null);
+  const [webpageSummaryError, setWebpageSummaryError] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
-  const [isContinuousScanningActive, setIsContinuousScanningActive] = useState(false);
+  const [isScanningActive, setIsScanningActive] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
+  const autoResetTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const { toast } = useToast();
 
+  const isUrl = (text: string | null): boolean => {
+    if (!text) return false;
+    try {
+      const parsedUrl = new URL(text);
+      return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+    } catch (_) {
+      return false;
+    }
+  };
+
   const stopContinuousScanning = useCallback(() => {
-    setIsContinuousScanningActive(false);
+    setIsScanningActive(false);
     if (animationFrameIdRef.current) {
       cancelAnimationFrame(animationFrameIdRef.current);
       animationFrameIdRef.current = null;
     }
   }, []);
 
+  const handleReset = useCallback(() => {
+    if (autoResetTimerRef.current) {
+      clearTimeout(autoResetTimerRef.current);
+      autoResetTimerRef.current = null;
+    }
+    stopContinuousScanning();
+    setQrContent(null);
+    setAiTitle(null);
+    setWebpageSummary(null);
+    setAiTitleError(null);
+    setWebpageSummaryError(null);
+    // Don't clear cameraError unless it's a transient scanning error
+    // setCameraError(null); 
+    setIsGeneratingTitle(false);
+    setIsSummarizingWebpage(false);
+    if (hasCameraPermission) {
+      startContinuousScanning();
+    }
+  }, [hasCameraPermission, stopContinuousScanning]); // startContinuousScanning will be defined below
+
   const scanLoop = useCallback(async () => {
-    if (!isContinuousScanningActive || isLoading || qrContent) {
-      if (qrContent || isLoading) stopContinuousScanning(); // Stop if content found or loading AI title
+    if (!isScanningActive || isGeneratingTitle || isSummarizingWebpage || qrContent) {
+      if (qrContent || isGeneratingTitle || isSummarizingWebpage) stopContinuousScanning();
       return;
     }
 
     if (!videoRef.current || !canvasRef.current || videoRef.current.readyState < videoRef.current.HAVE_METADATA || videoRef.current.videoWidth === 0) {
-      if (isContinuousScanningActive) { // only request new frame if still active
+      if (isScanningActive) {
           animationFrameIdRef.current = requestAnimationFrame(scanLoop);
       }
       return;
@@ -52,7 +92,7 @@ export default function HomePage() {
     const context = canvas.getContext('2d', { willReadFrequently: true });
 
     if (!context) {
-      setError("Could not get canvas context for QR decoding.");
+      setCameraError("Could not get canvas context for QR decoding.");
       stopContinuousScanning();
       return;
     }
@@ -68,45 +108,61 @@ export default function HomePage() {
       });
 
       if (code && code.data) {
-        stopContinuousScanning(); // Found a QR code
+        stopContinuousScanning();
         setQrContent(code.data);
-        setIsLoading(true); // For AI title generation
-        setError(null); // Clear previous errors
+        setCameraError(null); // Clear camera-specific errors
+        setAiTitleError(null);
+        setWebpageSummaryError(null);
 
-        const titleResult = await generateTitleAction(code.data);
-        if (titleResult.error) {
-          setError(titleResult.error);
-          setAiTitle("Content Analysis"); // Default title on error
-        } else {
-          setAiTitle(titleResult.title || "Content Analysis");
+        setIsGeneratingTitle(true);
+        generateTitleAction(code.data).then(titleResult => {
+          if (titleResult.error) {
+            setAiTitleError(titleResult.error);
+            setAiTitle("Content Analysis");
+          } else {
+            setAiTitle(titleResult.title || "Content Analysis");
+          }
+        }).finally(() => {
+          setIsGeneratingTitle(false);
+        });
+
+        if (isUrl(code.data)) {
+          setIsSummarizingWebpage(true);
+          summarizeWebpageAction(code.data).then(summaryResult => {
+            if (summaryResult.error) {
+              setWebpageSummaryError(summaryResult.error);
+              setWebpageSummary(null);
+            } else {
+              setWebpageSummary(summaryResult.summary || "No summary available.");
+            }
+          }).finally(() => {
+            setIsSummarizingWebpage(false);
+          });
         }
-        setIsLoading(false);
       }
     } catch (jsqrError) {
       console.error("Error during jsQR decoding:", jsqrError);
-      // Don't set page error for transient scan issues in continuous mode
-      // setError('An unexpected error occurred during QR code decoding.'); 
+      // Don't set persistent error for transient scan issues in continuous mode
     }
 
-    if (isContinuousScanningActive && !qrContent && !isLoading) { // Check flags again before scheduling next frame
+    if (isScanningActive && !qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
       animationFrameIdRef.current = requestAnimationFrame(scanLoop);
     }
-  }, [isContinuousScanningActive, isLoading, qrContent, stopContinuousScanning]);
+  }, [isScanningActive, isGeneratingTitle, isSummarizingWebpage, qrContent, stopContinuousScanning]);
 
 
   const startContinuousScanning = useCallback(() => {
-    if (hasCameraPermission && !isLoading && !qrContent) {
-      setIsContinuousScanningActive(true);
-      setError(null); // Clear errors before starting scan
-      // Ensure previous animation frame is cancelled before starting a new one
+    if (hasCameraPermission && !isGeneratingTitle && !isSummarizingWebpage && !qrContent) {
+      setIsScanningActive(true);
+      // setCameraError(null); // Clear errors before starting scan only if not a permission error
       if (animationFrameIdRef.current) {
         cancelAnimationFrame(animationFrameIdRef.current);
       }
       animationFrameIdRef.current = requestAnimationFrame(scanLoop);
     }
-  }, [hasCameraPermission, isLoading, qrContent, scanLoop]);
+  }, [hasCameraPermission, isGeneratingTitle, isSummarizingWebpage, qrContent, scanLoop]);
 
-
+  // Effect for camera permission and setup
   useEffect(() => {
     const getCameraPermission = async () => {
       if (typeof window !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -117,9 +173,10 @@ export default function HomePage() {
             videoRef.current.srcObject = stream;
             videoRef.current.onloadedmetadata = () => {
               setHasCameraPermission(true);
+              setCameraError(null); // Clear previous errors like "No camera found"
             };
             videoRef.current.onerror = () => {
-                setError("Video element error. Cannot play camera stream.");
+                setCameraError("Video element error. Cannot play camera stream.");
                 setHasCameraPermission(false);
                 stopContinuousScanning();
                  toast({
@@ -129,7 +186,7 @@ export default function HomePage() {
                 });
             }
           } else {
-             setError("Video element reference not found. Cannot start camera.");
+             setCameraError("Video element reference not found. Cannot start camera.");
              setHasCameraPermission(false);
              stopContinuousScanning();
           }
@@ -143,7 +200,7 @@ export default function HomePage() {
           } else if (err instanceof Error) {
             message = `Error accessing camera: ${err.message}`;
           }
-          setError(message);
+          setCameraError(message);
           setHasCameraPermission(false);
           stopContinuousScanning();
           toast({
@@ -154,7 +211,7 @@ export default function HomePage() {
         }
       } else {
         const message = "Camera access is not supported by this browser.";
-        setError(message);
+        setCameraError(message);
         setHasCameraPermission(false);
         stopContinuousScanning();
          toast({
@@ -168,15 +225,16 @@ export default function HomePage() {
     if (videoRef.current) {
         getCameraPermission();
     } else {
+        // Retry initialization if videoRef is not immediately available
         const timer = setTimeout(() => {
             if (videoRef.current) {
                  getCameraPermission();
-            } else {
-                setError("Failed to initialize camera: Video element not found after delay.");
+            } else if (hasCameraPermission === null) { // Only set error if still in initial loading state
+                setCameraError("Failed to initialize camera: Video element not found after delay.");
                 setHasCameraPermission(false);
                 stopContinuousScanning();
             }
-        }, 100);
+        }, 200);
         return () => clearTimeout(timer);
     }
 
@@ -185,34 +243,44 @@ export default function HomePage() {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
+      if (autoResetTimerRef.current) {
+        clearTimeout(autoResetTimerRef.current);
+      }
     };
-  }, [toast, stopContinuousScanning]); // Added stopContinuousScanning to dependencies
+  }, [toast, stopContinuousScanning, hasCameraPermission]);
 
+  // Effect to start/stop scanning based on state
   useEffect(() => {
-    if (hasCameraPermission && !qrContent && !isLoading) {
+    if (hasCameraPermission && !qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
       startContinuousScanning();
     } else {
       stopContinuousScanning();
     }
-  }, [hasCameraPermission, qrContent, isLoading, startContinuousScanning, stopContinuousScanning]);
+  }, [hasCameraPermission, qrContent, isGeneratingTitle, isSummarizingWebpage, startContinuousScanning, stopContinuousScanning]);
 
-
-  const handleReset = () => {
-    stopContinuousScanning(); // Stop any current scanning
-    setQrContent(null);
-    setAiTitle(null);
-    setError(null);
-    setIsLoading(false);
-    // Restart scanning if camera is available
-    if (hasCameraPermission) {
-        startContinuousScanning();
+  // Effect for auto-resetting
+  useEffect(() => {
+    if (qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
+      if (autoResetTimerRef.current) {
+        clearTimeout(autoResetTimerRef.current);
+      }
+      autoResetTimerRef.current = setTimeout(() => {
+        handleReset();
+      }, AUTO_RESET_DELAY);
     }
-  };
+    return () => {
+      if (autoResetTimerRef.current) {
+        clearTimeout(autoResetTimerRef.current);
+      }
+    };
+  }, [qrContent, isGeneratingTitle, isSummarizingWebpage, handleReset]);
   
+  const anyLoading = isGeneratingTitle || isSummarizingWebpage;
+
   return (
     <div className="flex flex-col items-center min-h-screen bg-gradient-to-br from-background to-primary/10 pt-2 pb-12 px-4 selection:bg-primary/30 selection:text-primary-foreground">
       <AppHeader />
-      <main className="w-full max-w-2xl space-y-8 mt-4">
+      <main className="w-full max-w-2xl space-y-6 mt-4">
         <Card className="w-full shadow-lg">
           <CardContent className="p-4 md:p-6">
             <div className="relative aspect-video bg-muted rounded-md overflow-hidden border border-primary/20">
@@ -229,31 +297,35 @@ export default function HomePage() {
                   <p className="text-center">Requesting camera access...</p>
                 </div>
               )}
-              {hasCameraPermission === false && !error && ( // Show generic message if no specific error
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10 text-destructive-foreground p-4">
-                  <VideoOff className="h-10 w-10 mb-3 text-destructive" />
-                  <h3 className="text-lg font-semibold text-destructive mb-1 text-center">Camera Unavailable</h3>
-                  <p className="text-sm text-center text-destructive/90">
-                    Camera access is not available. Please check settings.
-                  </p>
-                </div>
-              )}
-               {hasCameraPermission === false && error && ( // Show specific error if available
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10 text-destructive-foreground p-4">
+              {hasCameraPermission === false && cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10  p-4">
                   <VideoOff className="h-10 w-10 mb-3 text-destructive" />
                   <h3 className="text-lg font-semibold text-destructive mb-1 text-center">Camera Access Problem</h3>
                   <p className="text-sm text-center text-destructive/90">
-                    {error}
+                    {cameraError}
                   </p>
                 </div>
               )}
-              {isLoading && hasCameraPermission === true && ( // Loading AI title
+              {hasCameraPermission === false && !cameraError && ( // Fallback if no specific camera error but permission is false
+                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10 p-4">
+                    <VideoOff className="h-10 w-10 mb-3 text-destructive" />
+                    <h3 className="text-lg font-semibold text-destructive mb-1 text-center">Camera Unavailable</h3>
+                    <p className="text-sm text-center text-destructive/90">
+                        Camera access is not available. Please check permissions and ensure a camera is connected.
+                    </p>
+                 </div>
+              )}
+              {anyLoading && hasCameraPermission === true && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                   <Loader2 className="h-10 w-10 text-white animate-spin" />
-                  <p className="text-white ml-3">Analyzing content...</p>
+                  <p className="text-white ml-3">
+                    {isGeneratingTitle && isSummarizingWebpage ? "Analyzing content & webpage..." : 
+                     isGeneratingTitle ? "Analyzing content..." : 
+                     isSummarizingWebpage ? "Summarizing webpage..." : "Processing..."}
+                  </p>
                 </div>
               )}
-               {hasCameraPermission === true && isContinuousScanningActive && !qrContent && !isLoading && (
+               {hasCameraPermission === true && isScanningActive && !qrContent && !anyLoading && (
                  <div className="absolute inset-0 border-4 border-primary/50 rounded-md pointer-events-none animate-pulse" style={{animationDuration: '2s'}}>
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 px-3 py-1.5 bg-black/50 text-white text-xs rounded-md">Scanning...</div>
                  </div>
@@ -264,40 +336,28 @@ export default function HomePage() {
         
         <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-        {error && !isLoading && hasCameraPermission === true && ( // Display general errors if AI is not loading and camera had permission
-             // This error display will show AI errors or persistent camera errors not covered by the video overlay
+        {/* Display general errors not related to camera permission overlay, like AI errors */}
+        { (aiTitleError || webpageSummaryError) && !anyLoading && (
             <div className="p-4 text-sm bg-destructive/10 text-destructive border border-destructive/20 rounded-md flex items-center gap-2">
                 <AlertCircle className="h-5 w-5 shrink-0"/>
-                {error}
+                <div>
+                    {aiTitleError && <p>{aiTitleError}</p>}
+                    {webpageSummaryError && <p>{webpageSummaryError}</p>}
+                </div>
             </div>
         )}
-
-        <div className="flex flex-col sm:flex-row gap-3 w-full">
-          {(qrContent || aiTitle || error) && ( // Show reset button if there's any result or error
-            <Button
-              onClick={handleReset}
-              variant="outline"
-              disabled={isLoading} // Disable only if AI is loading
-              className="w-full text-base py-6 border-primary/50 text-primary hover:bg-primary/10 hover:text-primary shadow-sm transition-all duration-200 ease-in-out"
-              aria-label="Reset and scan again"
-            >
-              {isLoading ? (
-                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-              ) : (
-                <RotateCcw className="h-5 w-5 mr-2" />
-              )}
-              {isLoading ? 'Processing...' : 'Clear & Rescan'}
-            </Button>
-          )}
-        </div>
-
-        {(qrContent || isLoading || (error && !aiTitle && !qrContent)) && <Separator className="my-6 bg-border/50" />}
+        
+        {(qrContent || anyLoading || aiTitleError || webpageSummaryError) && <Separator className="my-6 bg-border/50" />}
 
         <QrContentDisplay
           content={qrContent}
           title={aiTitle}
-          isLoading={isLoading && !qrContent} // QrContentDisplay loading is for initial AI title fetch after scan
-          error={null} // Page level error handles display for AI errors now
+          isTitleLoading={isGeneratingTitle && !qrContent} // Only true if title is loading for the first time
+          titleError={aiTitleError}
+          webpageSummary={webpageSummary}
+          isWebpageSummaryLoading={isSummarizingWebpage}
+          webpageSummaryError={webpageSummaryError}
+          isUrlContent={isUrl(qrContent)}
         />
       </main>
       <footer className="mt-12 text-center text-sm text-muted-foreground">
@@ -307,3 +367,4 @@ export default function HomePage() {
     </div>
   );
 }
+
