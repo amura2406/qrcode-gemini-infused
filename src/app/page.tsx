@@ -1,13 +1,15 @@
+
 "use client";
 
-import { useState, useEffect, type ChangeEvent } from 'react';
+import { useState, useEffect, type ChangeEvent, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { QrCodeUploader } from '@/components/qr-code-uploader';
 import { QrContentDisplay } from '@/components/qr-content-display';
 import { AppHeader } from '@/components/app-header';
-import { generateTitleAction } from '@/lib/actions';
-import { ScanLine, RotateCcw, Loader2 } from 'lucide-react';
+import { generateTitleAction, decodeQrCodeAction } from '@/lib/actions';
+import { ScanLine, RotateCcw, Loader2, AlertCircle } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
+import { useToast } from "@/hooks/use-toast";
 
 export default function HomePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -17,6 +19,7 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputKey, setInputKey] = useState(Date.now());
+  const { toast } = useToast();
 
   useEffect(() => {
     if (selectedFile) {
@@ -53,26 +56,51 @@ export default function HomePage() {
     setQrContent(null);
     setAiTitle(null);
 
-    // Simulate QR code decoding
-    await new Promise(resolve => setTimeout(resolve, 750)); // Simulate processing delay
-    const simulatedContent = `Simulated content from QR in '${selectedFile.name}'. Could be a URL like https://example.com, or plain text.`;
-    setQrContent(simulatedContent);
+    const reader = new FileReader();
+    reader.readAsDataURL(selectedFile);
 
-    // Generate AI Title
-    try {
-      const result = await generateTitleAction(simulatedContent);
-      if (result.error) {
-        setError(result.error);
-        setAiTitle("Content Analysis"); // Fallback title on error
-      } else {
-        setAiTitle(result.title || "Content Analysis");
+    reader.onload = async () => {
+      const imageDataUri = reader.result as string;
+      try {
+        const decodeResult = await decodeQrCodeAction(imageDataUri);
+
+        if (decodeResult.error) {
+          setError(decodeResult.error);
+          setIsLoading(false);
+          return;
+        }
+
+        if (!decodeResult.content || decodeResult.content.trim() === "") {
+          setError("No QR code found in the image, or it could not be read.");
+          setQrContent(null);
+          setAiTitle(null);
+          setIsLoading(false);
+          return;
+        }
+        
+        setQrContent(decodeResult.content);
+
+        // Generate AI Title
+        const titleResult = await generateTitleAction(decodeResult.content);
+        if (titleResult.error) {
+          setError(titleResult.error); // Show error from title generation
+          setAiTitle("Content Analysis"); // Fallback title
+        } else {
+          setAiTitle(titleResult.title || "Content Analysis");
+        }
+      } catch (e) {
+        console.error("Error during QR scan or title generation:", e);
+        setError('An unexpected error occurred during processing.');
+        setAiTitle("Content Analysis"); // Fallback title
+      } finally {
+        setIsLoading(false);
       }
-    } catch (e) {
-      setError('An unexpected error occurred while generating the title.');
-      setAiTitle("Content Analysis"); // Fallback title on error
-    } finally {
+    };
+
+    reader.onerror = () => {
+      setError("Failed to read the selected file.");
       setIsLoading(false);
-    }
+    };
   };
 
   const handleReset = () => {
@@ -137,7 +165,7 @@ export default function HomePage() {
           content={qrContent}
           title={aiTitle}
           isLoading={isLoading}
-          error={!aiTitle && !isLoading ? error : null} // Only pass error if title couldn't be generated due to it
+          error={!aiTitle && !isLoading && !qrContent ? error : null} // Pass error if it's the primary reason for no content display
         />
       </main>
       <footer className="mt-12 text-center text-sm text-muted-foreground">

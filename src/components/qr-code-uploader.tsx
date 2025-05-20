@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { ChangeEvent, FC } from 'react';
@@ -61,9 +62,6 @@ export const QrCodeUploader: FC<QrCodeUploaderProps> = ({
               disabled={disabled}
             />
           </label>
-          <p className="text-xs text-center text-muted-foreground italic">
-            Note: QR code reading is simulated for this demo. Actual decoding from the image is not implemented.
-          </p>
         </div>
       </CardContent>
     </Card>
