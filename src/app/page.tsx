@@ -68,8 +68,13 @@ export default function HomePage() {
   }, [toast]);
 
   const handleScanFromCamera = async () => {
-    if (!videoRef.current || !canvasRef.current || !hasCameraPermission) {
+    if (!videoRef.current || !canvasRef.current || hasCameraPermission === false) {
       setError("Camera not ready or permission denied.");
+      toast({
+        title: "Scan Error",
+        description: "Camera not ready or permission denied.",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -85,6 +90,26 @@ export default function HomePage() {
 
     if (!context) {
       setError("Could not get canvas context for QR decoding.");
+      setIsLoading(false);
+      setIsScanning(false);
+      toast({
+        title: "Scan Error",
+        description: "Could not prepare for QR code scanning.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Ensure video has metadata and dimensions before attempting to draw/getImageData
+    // readyState HAVE_METADATA (1) or higher means dimensions should be available.
+    if (video.readyState < video.HAVE_METADATA || video.videoWidth === 0 || video.videoHeight === 0) {
+      setError("Camera is not ready yet. Please wait a moment and try again.");
+      toast({
+        title: "Camera Not Ready",
+        description: "The camera is still initializing. Please try scanning again in a moment.",
+        variant: "destructive",
+        duration: 3000,
+      });
       setIsLoading(false);
       setIsScanning(false);
       return;
@@ -112,20 +137,20 @@ export default function HomePage() {
           setAiTitle(titleResult.title || "Content Analysis");
         }
       } else {
-        setError("No QR code found in the current camera view, or it could not be read by jsQR.");
+        setError("No QR code found in the current camera view, or it could not be read.");
         setQrContent(null);
         setAiTitle(null);
         toast({
           title: "Scan Failed",
-          description: "No QR code detected. Try repositioning the camera.",
-          variant: "destructive",
+          description: "No QR code detected. Try repositioning the camera or ensure the QR code is clear.",
+          variant: "default", // Changed from destructive as it's a common outcome
           duration: 3000,
         });
       }
     } catch (jsqrError) {
       console.error("Error during jsQR decoding:", jsqrError);
-      setError('An unexpected error occurred during QR code decoding with jsQR.');
-      setAiTitle("Content Analysis");
+      setError('An unexpected error occurred during QR code decoding.');
+      setAiTitle("Content Analysis"); // Provide a generic title on error
     } finally {
       setIsLoading(false);
       setIsScanning(false);
@@ -168,7 +193,7 @@ export default function HomePage() {
                   ref={videoRef}
                   className="w-full h-full object-cover"
                   autoPlay
-                  playsInline
+                  playsInline // Important for iOS
                   muted
                 />
                 {isScanning && (
@@ -194,7 +219,7 @@ export default function HomePage() {
         <div className="flex flex-col sm:flex-row gap-3 w-full">
           <Button
             onClick={handleScanFromCamera}
-            disabled={!hasCameraPermission || isLoading || isScanning}
+            disabled={hasCameraPermission === false || isLoading || isScanning}
             className="w-full sm:flex-1 text-base py-6 bg-accent hover:bg-accent/90 text-accent-foreground shadow-md transition-all duration-200 ease-in-out transform hover:scale-105 focus:ring-2 focus:ring-accent focus:ring-offset-2"
             aria-label="Scan QR Code from Camera"
           >
