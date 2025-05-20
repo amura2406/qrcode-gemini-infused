@@ -1,3 +1,4 @@
+
 import type { FC } from 'react';
 
 export const AppHeader: FC = () => {
@@ -7,7 +8,7 @@ export const AppHeader: FC = () => {
         QR Info Reveal
       </h1>
       <p className="mt-3 text-lg text-muted-foreground sm:text-xl">
-        Upload a QR code image to see its content and get a smart title.
+        Use your camera to scan a QR code and see its content with a smart title.
       </p>
     </header>
   );
