@@ -4,11 +4,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { QrContentDisplay } from '@/components/qr-content-display';
 import { AppHeader } from '@/components/app-header';
-import { generateTitleAction, summarizeWebpageAction } from '@/lib/actions';
+import { generateTitleAction, summarizeWebpageAction, decodeQrCodeFromFrameAction } from '@/lib/actions';
 import { Loader2, AlertCircle, VideoOff } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from "@/hooks/use-toast";
-import jsQR from "jsqr";
+// import jsQR from "jsqr";
 import { Card, CardContent } from '@/components/ui/card';
 
 const AUTO_RESET_DELAY = 10000; // 10 seconds
@@ -24,8 +24,10 @@ export default function HomePage() {
   const [aiTitleError, setAiTitleError] = useState<string | null>(null);
   const [webpageSummaryError, setWebpageSummaryError] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [qrDetectionError, setQrDetectionError] = useState<string | null>(null);
   
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+  const [isDetectingQrCode, setIsDetectingQrCode] = useState<boolean>(false);
   const [isScanningActive, setIsScanningActive] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -65,8 +67,10 @@ export default function HomePage() {
     setWebpageSummary(null);
     setAiTitleError(null);
     setWebpageSummaryError(null);
+    setQrDetectionError(null);
     // Don't clear cameraError unless it's a transient scanning error
     // setCameraError(null); 
+    setIsDetectingQrCode(false);
     setIsGeneratingTitle(false);
     setIsSummarizingWebpage(false);
     if (hasCameraPermission) {
@@ -75,8 +79,8 @@ export default function HomePage() {
   }, [hasCameraPermission, stopContinuousScanning]); // startContinuousScanning will be defined below
 
   const scanLoop = useCallback(async () => {
-    if (!isScanningActive || isGeneratingTitle || isSummarizingWebpage || qrContent) {
-      if (qrContent || isGeneratingTitle || isSummarizingWebpage) stopContinuousScanning();
+    if (!isScanningActive || isDetectingQrCode || isGeneratingTitle || isSummarizingWebpage || qrContent) {
+      if (qrContent || isDetectingQrCode || isGeneratingTitle || isSummarizingWebpage) stopContinuousScanning();
       return;
     }
 
@@ -100,22 +104,21 @@ export default function HomePage() {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
 
-    try {
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: "dontInvert",
-      });
+    setIsDetectingQrCode(true);
+    setQrDetectionError(null);
 
-      if (code && code.data) {
+    decodeQrCodeFromFrameAction(imageBase64).then(result => {
+      if (result.qrData) {
         stopContinuousScanning();
-        setQrContent(code.data);
-        setCameraError(null); // Clear camera-specific errors
+        setQrContent(result.qrData);
+        setCameraError(null); 
         setAiTitleError(null);
         setWebpageSummaryError(null);
 
         setIsGeneratingTitle(true);
-        generateTitleAction(code.data).then(titleResult => {
+        generateTitleAction(result.qrData).then(titleResult => {
           if (titleResult.error) {
             setAiTitleError(titleResult.error);
             setAiTitle("Content Analysis");
@@ -126,9 +129,9 @@ export default function HomePage() {
           setIsGeneratingTitle(false);
         });
 
-        if (isUrl(code.data)) {
+        if (isUrl(result.qrData)) {
           setIsSummarizingWebpage(true);
-          summarizeWebpageAction(code.data).then(summaryResult => {
+          summarizeWebpageAction(result.qrData).then(summaryResult => {
             if (summaryResult.error) {
               setWebpageSummaryError(summaryResult.error);
               setWebpageSummary(null);
@@ -139,20 +142,28 @@ export default function HomePage() {
             setIsSummarizingWebpage(false);
           });
         }
+      } else if (result.error) {
+        setQrDetectionError(result.error);
+        setQrContent(null); // Stop further processing for this frame
+        // Potentially stopContinuousScanning() here if AI errors are persistent or critical
       }
-    } catch (jsqrError) {
-      console.error("Error during jsQR decoding:", jsqrError);
-      // Don't set persistent error for transient scan issues in continuous mode
-    }
+      // If no qrData and no error, the loop will continue if isScanningActive
+    }).catch(error => {
+      console.error("Error calling decodeQrCodeFromFrameAction:", error);
+      setQrDetectionError("An unexpected error occurred while detecting QR code.");
+      setQrContent(null);
+    }).finally(() => {
+      setIsDetectingQrCode(false);
+    });
 
-    if (isScanningActive && !qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
+    if (isScanningActive && !qrContent && !isDetectingQrCode && !isGeneratingTitle && !isSummarizingWebpage) {
       animationFrameIdRef.current = requestAnimationFrame(scanLoop);
     }
-  }, [isScanningActive, isGeneratingTitle, isSummarizingWebpage, qrContent, stopContinuousScanning]);
+  }, [isScanningActive, isDetectingQrCode, isGeneratingTitle, isSummarizingWebpage, qrContent, stopContinuousScanning]);
 
 
   const startContinuousScanning = useCallback(() => {
-    if (hasCameraPermission && !isGeneratingTitle && !isSummarizingWebpage && !qrContent) {
+    if (hasCameraPermission && !isDetectingQrCode && !isGeneratingTitle && !isSummarizingWebpage && !qrContent) {
       setIsScanningActive(true);
       // setCameraError(null); // Clear errors before starting scan only if not a permission error
       if (animationFrameIdRef.current) {
@@ -251,16 +262,16 @@ export default function HomePage() {
 
   // Effect to start/stop scanning based on state
   useEffect(() => {
-    if (hasCameraPermission && !qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
+    if (hasCameraPermission && !qrContent && !isDetectingQrCode && !isGeneratingTitle && !isSummarizingWebpage) {
       startContinuousScanning();
     } else {
       stopContinuousScanning();
     }
-  }, [hasCameraPermission, qrContent, isGeneratingTitle, isSummarizingWebpage, startContinuousScanning, stopContinuousScanning]);
+  }, [hasCameraPermission, qrContent, isDetectingQrCode, isGeneratingTitle, isSummarizingWebpage, startContinuousScanning, stopContinuousScanning]);
 
   // Effect for auto-resetting
   useEffect(() => {
-    if (qrContent && !isGeneratingTitle && !isSummarizingWebpage) {
+    if (qrContent && !isDetectingQrCode && !isGeneratingTitle && !isSummarizingWebpage) {
       if (autoResetTimerRef.current) {
         clearTimeout(autoResetTimerRef.current);
       }
@@ -273,9 +284,9 @@ export default function HomePage() {
         clearTimeout(autoResetTimerRef.current);
       }
     };
-  }, [qrContent, isGeneratingTitle, isSummarizingWebpage, handleReset]);
+  }, [qrContent, isDetectingQrCode, isGeneratingTitle, isSummarizingWebpage, handleReset]);
   
-  const anyLoading = isGeneratingTitle || isSummarizingWebpage;
+  const anyLoading = isDetectingQrCode || isGeneratingTitle || isSummarizingWebpage;
 
   return (
     <div className="flex flex-col items-center min-h-screen bg-gradient-to-br from-background to-primary/10 pt-2 pb-12 px-4 selection:bg-primary/30 selection:text-primary-foreground">
@@ -319,7 +330,8 @@ export default function HomePage() {
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                   <Loader2 className="h-10 w-10 text-white animate-spin" />
                   <p className="text-white ml-3">
-                    {isGeneratingTitle && isSummarizingWebpage ? "Analyzing content & webpage..." : 
+                    {isDetectingQrCode ? "Detecting QR Code..." : 
+                     isGeneratingTitle && isSummarizingWebpage ? "Analyzing content & webpage..." : 
                      isGeneratingTitle ? "Analyzing content..." : 
                      isSummarizingWebpage ? "Summarizing webpage..." : "Processing..."}
                   </p>
@@ -337,17 +349,18 @@ export default function HomePage() {
         <canvas ref={canvasRef} style={{ display: 'none' }} />
 
         {/* Display general errors not related to camera permission overlay, like AI errors */}
-        { (aiTitleError || webpageSummaryError) && !anyLoading && (
+        { (qrDetectionError || aiTitleError || webpageSummaryError) && !anyLoading && (
             <div className="p-4 text-sm bg-destructive/10 text-destructive border border-destructive/20 rounded-md flex items-center gap-2">
                 <AlertCircle className="h-5 w-5 shrink-0"/>
                 <div>
+                    {qrDetectionError && <p>{qrDetectionError}</p>}
                     {aiTitleError && <p>{aiTitleError}</p>}
                     {webpageSummaryError && <p>{webpageSummaryError}</p>}
                 </div>
             </div>
         )}
         
-        {(qrContent || anyLoading || aiTitleError || webpageSummaryError) && <Separator className="my-6 bg-border/50" />}
+        {(qrContent || anyLoading || qrDetectionError || aiTitleError || webpageSummaryError) && <Separator className="my-6 bg-border/50" />}
 
         <QrContentDisplay
           content={qrContent}
@@ -362,7 +375,7 @@ export default function HomePage() {
       </main>
       <footer className="mt-12 text-center text-sm text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} QR Info Reveal. All rights reserved.</p>
-        <p className="mt-1">Powered by Next.js, jsQR & Firebase Genkit</p>
+        <p className="mt-1">Powered by Next.js, Gemini & Firebase Genkit</p>
       </footer>
     </div>
   );
