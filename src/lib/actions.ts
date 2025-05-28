@@ -3,6 +3,7 @@
 
 import { generateQrCodeTitle, type QrCodeTitleGeneratorInput } from '@/ai/flows/qr-code-title-generator';
 import { summarizeWebpageContent, type SummarizeWebpageInput } from '@/ai/flows/summarize-webpage-flow';
+import { geminiLiveQrDecodeFlow, type GeminiLiveQrDecodeInput } from '@/ai/flows/geminiLiveQrDecodeFlow';
 
 export async function generateTitleAction(qrCodeContent: string): Promise<{ title?: string; error?: string }> {
   if (!qrCodeContent || qrCodeContent.trim() === '') {
@@ -70,5 +71,28 @@ export async function summarizeWebpageAction(url: string): Promise<{ summary?: s
       return { error: `AI webpage summarization failed: ${e.message}`};
     }
     return { error: 'An unexpected error occurred during webpage summarization.' };
+  }
+}
+
+export async function decodeQrCodeFromFrameAction(imageString: string): Promise<{ qrData?: string; error?: string }> {
+  if (!imageString || imageString.trim() === '') {
+    return { error: 'Image data is empty. Cannot decode QR code.' };
+  }
+  try {
+    const input: GeminiLiveQrDecodeInput = { imageString };
+    const result = await geminiLiveQrDecodeFlow(input);
+    
+    if (result && result.qrData) {
+      return { qrData: result.qrData };
+    } else {
+      // No QR code found or decoded by the AI
+      return { qrData: undefined }; 
+    }
+  } catch (e) {
+    console.error('Error decoding QR code via AI:', e);
+    if (e instanceof Error) {
+        return { error: `AI QR code decoding failed: ${e.message}`};
+    }
+    return { error: 'An unexpected error occurred during AI QR code decoding.' };
   }
 }
